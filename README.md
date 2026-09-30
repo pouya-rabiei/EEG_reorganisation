@@ -42,7 +42,7 @@ By default, group outputs go to `results/` beside the scripts. `EEG_RESULTS_DIR`
 
 ## Inputs
 
-- BIDS EEG folders: `RAW/raw_data_ncbp` and `RAW/raw_data_ncbpmc`.
+- BIDS EEG folders: `RAW/raw_data_ncbp` and `RAW/raw_data_ncbphc`.
 - Demographics: `demo_ncbp.csv` and `demo_ncbpmc.csv` in those folders, with `subject`, `age` and `sex`; the patient table also needs `chroncity_class_6m`.
 - Six-month outcome: `0 = NCBP_nontrans`, `1 = NCBP_trans`. The study-specific correction for `sub-329` is explicit in `load_subject_info()` in `config.py`.
 - Source-group plus subject ID identifies a participant; outcome group does not replace that identifier. Participants need at least 50 retained epochs for the analytical sample.
