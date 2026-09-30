@@ -62,8 +62,3 @@ Script 03 saves the spectral tables, four graph/connectivity subject tables, par
 - NBS uses **unadjusted pooled-variance Student t statistics**, not Welch statistics or age/sex-adjusted tests. Components are formed from `abs(t) > threshold`, so mixed-sign components are possible. Component extent is the number of unique edges. There are 5,000 label permutations, seed 42, shared across thresholds, with the `(b + 1)/(5000 + 1)` P-value correction. FWE control is within each comparison/measure/band/threshold analysis, not across all analyses. Individual edges do not receive corrected significance from NBS.
 - Figures use concise titles identifying the group comparison, measure, band, metric and network as applicable. Glass-brain columns identify each group, effect size and significant effect size. Axes, colorbars, legends and the existing plotting style are retained. SVG export uses the existing 600-dpi save setting for rasterized elements. Blank significance maps mean no supported effect, not missing analysis.
 
-## Validation
-
-The scripts were run on the saved individual outputs for 29 transitioners, 43 non-transitioners and 65 controls. QC, PSD, all GEE analyses and all 72 NBS comparison/measure/band/threshold combinations were rerun. Statistical outputs matched the corrected subject-329 reference to numerical precision, with unchanged interaction-plus-contrast decisions. All seven plotting scripts completed. Raw EEG preprocessing and full source reconstruction were not rerun; reusing existing source files does not validate a fresh end-to-end reconstruction.
-
-Generated outputs and caches are ignored by Git. Review the staged files before publishing; do not add identifiable demographics, raw recordings or restricted participant data.
