@@ -1,0 +1,13 @@
+results/
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.ipynb_checkpoints/
+.DS_Store
+Thumbs.db
+RAW/
+derivatives/
+*.fif
+*.fif.gz
+*.pkl
