@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
+from patsy import build_design_matrices
 from statsmodels.stats.multitest import multipletests
 from config import (
     ANALYSIS_GROUPS, network_pairs, comparison_dir, comparison_specs,
@@ -45,6 +46,7 @@ def main():
     model_rows = []
     term_tables = []
     contrast_rows = []
+    adjusted_rows = []
     for con_type in con_types:
         for metric in metrics:
             for band in freq_bands:
@@ -130,6 +132,29 @@ def main():
                     terms[column] = value
                 term_tables.append(terms)
                 param_names = list(result.params.index)
+                # Standardize each group to the same pooled participant age/sex mix.
+                reference = df.drop_duplicates("sample_id")[["age", "sex"]].copy()
+                for location in pair_order:
+                    for group in ANALYSIS_GROUPS:
+                        prediction = reference.assign(
+                            analysis_group=group, network_pair=location
+                        )
+                        design = build_design_matrices(
+                            [result.model.data.design_info], prediction
+                        )[0]
+                        estimate = result.t_test(np.asarray(design).mean(axis=0))
+                        ci = np.asarray(estimate.conf_int()).ravel()
+                        observed = df.loc[
+                            df.analysis_group.eq(group) & df["network_pair"].eq(location), metric
+                        ]
+                        adjusted_rows.append({
+                            **model_metadata, "network_pair": location,
+                            "analysis_group": group, "n": int(observed.size),
+                            "observed_mean": observed.mean(), "observed_sd": observed.std(),
+                            "adjusted_mean": float(np.squeeze(estimate.effect)),
+                            "se": float(np.squeeze(estimate.sd)),
+                            "ci_low": ci[0], "ci_high": ci[1],
+                        })
 
                 def group_vector(group, network_pair):
                     vector = np.zeros(len(param_names))
@@ -207,6 +232,7 @@ def main():
         0.05
     ) & contrasts["interaction_p_corrected"].lt(0.05)
     models.to_csv(output_dir / "model_info.csv", index=False)
+    pd.DataFrame(adjusted_rows).to_csv(output_dir / "GEE_adjusted_means.csv", index=False)
     terms.to_csv(output_dir / "GEE_omnibus.csv", index=False)
     contrasts.to_csv(output_dir / "GEE_contrasts.csv", index=False)
 

@@ -5,18 +5,18 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from config import ANALYSIS_GROUPS, GROUP_LABELS, NETWORK_ORDER, spectral_dir
+from config import ANALYSIS_GROUPS, GROUP_LABELS, NETWORK_ORDER, plot_spectral_dir as spectral_dir, figure_dir
 
 
 def main():
     psd_all = pd.read_csv(spectral_dir / "psd_interp_all_groups.csv")
     psd_cluster_summary = pd.read_csv(
-        spectral_dir / "PSD_network_cluster_summary.csv"
+        spectral_dir / "PSD_network_cluster_summary_age_sex_adjusted.csv"
     )
     psd_cluster_all = pd.read_csv(
-        spectral_dir / "PSD_network_cluster_all.csv"
+        spectral_dir / "PSD_network_cluster_all_age_sex_adjusted.csv"
     )
-    psd_fig_dir = spectral_dir / "PSD_HEATMAPS"
+    psd_fig_dir = figure_dir / "SPECTRAL" / "PSD_HEATMAPS"
     psd_fig_dir.mkdir(parents=True, exist_ok=True)
     ANALYSIS_GROUPS = ["NCBP_trans", "NCBP_nontrans", "HC"]
     panel_pairs = [

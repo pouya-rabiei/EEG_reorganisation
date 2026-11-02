@@ -283,10 +283,10 @@ def main():
         )
     )
     psd_cluster_summary.to_csv(
-        spectral_dir / "PSD_network_cluster_summary.csv", index=False
+        spectral_dir / "PSD_network_cluster_summary_age_sex_adjusted.csv", index=False
     )
     psd_cluster_all.to_csv(
-        spectral_dir / "PSD_network_cluster_all.csv", index=False
+        spectral_dir / "PSD_network_cluster_all_age_sex_adjusted.csv", index=False
     )
 
 

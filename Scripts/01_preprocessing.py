@@ -137,9 +137,9 @@ def main():
         if "FCz" not in raw.ch_names:
             raw = mne.add_reference_channels(raw, ref_channels=["FCz"], copy=False)
         raw.set_montage(montage, on_missing="warn")
-        raw.set_eeg_reference(ref_channels="average", projection=False, verbose="ERROR")
         stats = {column: np.nan for column in PROCESS_COLUMNS}
         stats["n_bad_chans"] = len(raw.info["bads"])
+        raw.set_eeg_reference(ref_channels="average", projection=False, verbose="ERROR")
         ica_events = mne.make_fixed_length_events(raw, id=1, duration=5)
         ica_epochs = mne.Epochs(
             raw,
@@ -171,7 +171,7 @@ def main():
             "line noise",
         }
         ica_df["rejected"] = ica_df["label"].isin(artifact_classes) & (
-            ica_df["probability"] > 0.7
+            ica_df["probability"] >= 0.80
         )
         ica.exclude = ica_df.loc[ica_df["rejected"], "component"].tolist()
         stats["n_removed_icas_total"] = int(ica_df["rejected"].sum())
@@ -191,8 +191,10 @@ def main():
             ((ica_df["label"] == "line noise") & ica_df["rejected"]).sum()
         )
         ica.apply(raw, verbose="ERROR")
+
         stats["n_interp_bads"] = len(raw.info["bads"])
         raw.interpolate_bads(reset_bads=True, verbose="ERROR")
+
         bad_annotations, amplitude_bad_channels = annotate_amplitude(
             raw,
             peak=dict(eeg=100e-6),
@@ -205,6 +207,15 @@ def main():
         raw.set_annotations(raw.annotations + bad_annotations)
         stats["n_amplitude_bad_segments"] = len(bad_annotations)
         stats["n_amplitude_bad_channels"] = len(amplitude_bad_channels)
+
+        # Repair newly flagged channels only when the detector returns them.
+        stats["n_interp_amplitude_bads"] = len(amplitude_bad_channels)
+        if amplitude_bad_channels:
+            raw.info["bads"] = sorted(
+                set(raw.info["bads"]) | set(amplitude_bad_channels)
+            )
+            raw.interpolate_bads(reset_bads=True, verbose="ERROR")
+
         raw_psd = raw.compute_psd(
             method="welch",
             fmin=1,

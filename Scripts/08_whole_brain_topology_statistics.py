@@ -1,6 +1,5 @@
 """Whole-brain clustering and efficiency GEE."""
 
-from pathlib import Path
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
@@ -10,8 +9,9 @@ from config import comparison_dir, comparison_pairs, comparison_specs
 
 
 def main():
+    whole_brain_dir = comparison_dir / "whole_brain_topology"
     df_net_metric_groups = pd.read_csv(
-        comparison_dir / "whole_brain" / "whole_brain_metrics.csv"
+        whole_brain_dir / "whole_brain_metrics.csv"
     )
     WHOLE_BRAIN_GROUPS = ["HC", "NCBP_nontrans", "NCBP_trans"]
     WHOLE_BRAIN_BANDS = ["Theta", "Alpha", "Beta", "Gamma"]
@@ -19,7 +19,6 @@ def main():
         (spec["first_group"], spec["second_group"]) for spec in comparison_specs
     ]
     metrics = ["global_clustering", "global_efficiency"]
-    whole_brain_dir = Path(comparison_dir) / "whole_brain"
     whole_brain_dir.mkdir(parents=True, exist_ok=True)
 
     def run_models_gee_whole_brain(data, metrics):
@@ -189,6 +188,8 @@ def main():
     bands_all["passes_interaction_gate"] = bands_all["p_corrected"].lt(
         0.05
     ) & bands_all["interaction_p_corrected"].lt(0.05)
+    terms_all.to_csv(whole_brain_dir / "GEE_omnibus.csv", index=False)
+    bands_all.to_csv(whole_brain_dir / "GEE_contrasts.csv", index=False)
     terms_aec = terms_all.loc[terms_all["con_type"].eq("aec")].copy()
     terms_dwpli = terms_all.loc[terms_all["con_type"].eq("dwpli")].copy()
     band_aec = bands_all.loc[bands_all["con_type"].eq("aec")].copy()

@@ -1,54 +1,103 @@
-"""Between-network connectivity boxplots heatmaps and circles."""
+"""Between-network connectivity boxplots, vertical adjusted pointplots and heatmaps."""
 
-from pathlib import Path
 from itertools import combinations
 import numpy as np
 import pandas as pd
-from scipy.stats import t
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
+from matplotlib.lines import Line2D
 from matplotlib.colors import TwoSlopeNorm
 from matplotlib.cm import ScalarMappable
 import seaborn as sns
 from config import (
     GROUP_LABELS,
     NETWORK_ORDER,
-    comparison_dir,
+    plot_results_dir, figure_dir,
     comparison_pairs,
     conn_labels,
+    PLOT_GROUPS,
+    group_palette, con_types, freq_bands,
+)
+from plotting_utils import (
+    save_plot, add_significance_brackets, SHOW_SIGNIFICANCE,
+    SIGNIFICANCE_COLOR, SIGNIFICANCE_LINEWIDTH, SIGNIFICANCE_FONTSIZE,
 )
 
 
-def main():
+def plot_between_points(estimates, contrasts, con, band, out_dir):
+    pairs = [f"{a}__{b}" for a, b in combinations(NETWORK_ORDER, 2)]
+    means = estimates.loc[estimates.con_type.eq(con) & estimates.band.eq(band)]
+    supported = contrasts.loc[
+        contrasts.con_type.eq(con) & contrasts.band.eq(band)
+        & contrasts.passes_interaction_gate.astype(str).str.lower().eq("true")
+    ]
+    offsets = dict(zip(PLOT_GROUPS, [-.23, 0, .23]))
+    markers = {"NCBP_trans": "o", "NCBP_nontrans": "s", "HC": "^"}
+    fig, ax = plt.subplots(figsize=(9, 13))
+    for i in range(len(pairs)):
+        if i % 2 == 0:
+            ax.axhspan(i-.5, i+.5, color="#f2f4f6", zorder=0)
+    for group in PLOT_GROUPS:
+        rows = means.loc[means.analysis_group.eq(group)].set_index("network_pair").loc[pairs]
+        y = np.arange(len(pairs)) + offsets[group]
+        ax.errorbar(rows.adjusted_mean, y,
+                    xerr=np.vstack([rows.adjusted_mean-rows.ci_low, rows.ci_high-rows.adjusted_mean]),
+                    fmt=markers[group], linestyle="none", color=group_palette[group],
+                    markersize=6, capsize=3, elinewidth=1.4, zorder=4)
+    low, high = means.ci_low.min(), means.ci_high.max()
+    step = max(high-low, .001)*.10
+    for i, pair in enumerate(pairs):
+        rows = supported.loc[supported.network_pair.eq(pair)] if SHOW_SIGNIFICANCE else supported.iloc[:0]
+        for row in rows.itertuples():
+            level = comparison_pairs.index((row.first_group, row.second_group))
+            first, second = i+offsets[row.first_group], i+offsets[row.second_group]
+            x = high + (level+1)*step
+            mid = (first+second)/2
+            ax.plot([x-step*.2, x, x], [first, first, mid], color=SIGNIFICANCE_COLOR, lw=SIGNIFICANCE_LINEWIDTH)
+            ax.plot([x, x, x-step*.2], [mid, second, second], color=SIGNIFICANCE_COLOR, lw=SIGNIFICANCE_LINEWIDTH)
+            ax.text(x+step*.1, mid, "*", ha="left", va="center", fontsize=SIGNIFICANCE_FONTSIZE, color=SIGNIFICANCE_COLOR)
+    ax.set(ylim=(len(pairs)-.4, -.6),
+           xlim=(low-step, high+step*(4.5 if SHOW_SIGNIFICANCE and len(supported) else 1)))
+    ax.set_yticks(range(len(pairs)), [pair.replace("__", " – ") for pair in pairs])
+    ax.tick_params(labelsize=13)
+    ax.tick_params(axis="y", length=0, pad=8)
+    ax.set_xlabel(f"Adjusted mean {conn_labels[con]} (95% CI)", fontsize=15, labelpad=12)
+    ax.set_ylabel("")
+    ax.set_title(f"{conn_labels[con]} · {band}", fontsize=18, pad=16)
+    ax.set_axisbelow(True)
+    ax.grid(False)
+    ax.ticklabel_format(axis="x", style="plain", useOffset=False)
+    ax.xaxis.set_major_locator(plt.MaxNLocator(5))
+    sns.despine(ax=ax, left=True)
+    fig.legend(handles=[Line2D([], [], color=group_palette[g], marker=markers[g],
+                              linestyle="none", markersize=9, label=GROUP_LABELS[g]) for g in PLOT_GROUPS],
+               loc="upper center", bbox_to_anchor=(.5, .995), ncol=3, frameon=False, fontsize=12,
+               columnspacing=1.1, handletextpad=.4)
+    fig.subplots_adjust(left=.31, right=.97, bottom=.075, top=.92)
+    stem = f"network_between_connectivity_{con}_{band}_adjusted_pointplot"
+    save_plot(fig, out_dir / stem)
+
+
+def main(boxes_only=False):
+    plt.rcParams["svg.fonttype"] = "none"
     df_between_net_conn = pd.read_csv(
-        comparison_dir / "between_network_connectivity" / "subject_metrics.csv"
+        plot_results_dir / "between_network_connectivity" / "subject_metrics.csv"
     )
     between_contrasts_all = pd.read_csv(
-        comparison_dir / "between_network_connectivity" / "GEE_contrasts.csv"
+        plot_results_dir / "between_network_connectivity" / "GEE_contrasts.csv"
     )
-    network_figure_dir = comparison_dir / "between_network_connectivity" / "FIGURES"
+    adjusted_means = pd.read_csv(plot_results_dir / "between_network_connectivity" / "GEE_adjusted_means.csv")
+    network_figure_dir = figure_dir / "between_network_connectivity" / "FIGURES"
     network_figure_dir.mkdir(parents=True, exist_ok=True)
-    BETWEEN_NETWORK_ORDER = [
-        "Vis",
-        "SomMot",
-        "DorsAttn",
-        "SalVentAttn",
-        "Limbic",
-        "Cont",
-        "Default",
-    ]
-    BETWEEN_PAIR_ORDER = [
-        f"{first}__{second}" for first, second in combinations(BETWEEN_NETWORK_ORDER, 2)
-    ]
-    BETWEEN_GROUP_ORDER = ["NCBP_trans", "NCBP_nontrans", "HC"]
-    BETWEEN_GROUP_PALETTE = {
-        "NCBP_trans": "#D55E00",
-        "NCBP_nontrans": "#009E73",
-        "HC": "#0072B2",
-    }
-    between_boxplot_dir = (
-        Path(comparison_dir) / "between_network_connectivity" / "FIGURES"
-    )
+    if not boxes_only:
+        for con in con_types:
+            for band in freq_bands:
+                plot_between_points(adjusted_means, between_contrasts_all,
+                                    con, band, network_figure_dir)
+    BETWEEN_PAIR_ORDER = [f"{a}__{b}" for a, b in combinations(NETWORK_ORDER, 2)]
+    BETWEEN_GROUP_ORDER = PLOT_GROUPS
+    BETWEEN_GROUP_PALETTE = group_palette
+    between_boxplot_dir = network_figure_dir
 
     def plot_between_connectivity_boxplot(df, con_type, band, out_file):
         value_col = "mean_between_connectivity"
@@ -84,7 +133,7 @@ def main():
             whis=1.5,
             showfliers=False,
             linewidth=1.0,
-            boxprops={"edgecolor": "black", "linewidth": 1.0, "alpha": 0.8},
+            boxprops={"edgecolor": "black", "linewidth": 1.0, "alpha": .8},
             medianprops={"color": "black", "linewidth": 1.6},
             whiskerprops={"color": "black", "linewidth": 1.0},
             capprops={"color": "black", "linewidth": 1.0},
@@ -102,7 +151,7 @@ def main():
             dodge=True,
             jitter=0.15,
             size=3.5,
-            alpha=0.7,
+            alpha=1.0,
             edgecolor="none",
             linewidth=0,
             zorder=4,
@@ -141,11 +190,17 @@ def main():
             frameon=False,
             fontsize=20,
         )
-        fig.savefig(out_file, dpi=600, bbox_inches="tight", transparent=True)
-        plt.close(fig)
+        rows = between_contrasts_all.loc[
+            between_contrasts_all.con_type.eq(con_type)
+            & between_contrasts_all.band.eq(band)
+        ]
+        offsets = dict(zip(BETWEEN_GROUP_ORDER, [-.8/3, 0, .8/3]))
+        add_significance_brackets(ax, rows, BETWEEN_PAIR_ORDER, "network_pair",
+                                  offsets, show=SHOW_SIGNIFICANCE)
+        save_plot(fig, out_file)
 
-    for con_type in ["aec", "dwpli"]:
-        for band in ["Theta", "Alpha", "Beta", "Gamma"]:
+    for con_type in con_types:
+        for band in freq_bands:
             plot_between_connectivity_boxplot(
                 df=df_between_net_conn,
                 con_type=con_type,
@@ -153,32 +208,10 @@ def main():
                 out_file=between_boxplot_dir
                 / f"network_between_connectivity_{con_type}_{band}_boxplot.svg",
             )
-    NETWORK_ORDER = [
-        "Vis",
-        "SomMot",
-        "DorsAttn",
-        "SalVentAttn",
-        "Limbic",
-        "Cont",
-        "Default",
-    ]
-    BAND_ORDER = ["Theta", "Alpha", "Beta", "Gamma"]
-    comparison_pairs = [
-        ("NCBP_trans", "NCBP_nontrans"),
-        ("NCBP_trans", "HC"),
-        ("NCBP_nontrans", "HC"),
-    ]
-    network_color_map = {
-        "Vis": "#1F77B4",
-        "SomMot": "#FF7F0E",
-        "DorsAttn": "#2CA02C",
-        "SalVentAttn": "#D62728",
-        "Limbic": "#9467BD",
-        "Cont": "#8C564B",
-        "Default": "#E377C2",
-    }
+    if boxes_only:
+        return
+    BAND_ORDER = list(freq_bands)
     CMAP = plt.get_cmap("turbo")
-    SIG_THRESHOLD = 0.05
     df_between_plot = between_contrasts_all.loc[
         between_contrasts_all["metric"].eq("mean_between_connectivity")
     ].copy()
@@ -208,28 +241,7 @@ def main():
             significant[i, j] = significant[j, i] = row.plot_significant
         return (matrix, significant)
 
-    sector_gap = np.deg2rad(6)
-    sector_width = (2 * np.pi - len(NETWORK_ORDER) * sector_gap) / len(NETWORK_ORDER)
-    sector_angles = {
-        network: (
-            index * (sector_width + sector_gap),
-            index * (sector_width + sector_gap) + sector_width,
-        )
-        for index, network in enumerate(NETWORK_ORDER)
-    }
-    sector_centres = {
-        network: (start + end) / 2 for network, (start, end) in sector_angles.items()
-    }
-
-    def connection_curve(theta1, theta2):
-        first = np.array([np.sin(theta1), np.cos(theta1)])
-        second = np.array([np.sin(theta2), np.cos(theta2)])
-        control = 0.28 * (first + second)
-        t = np.linspace(0, 1, 180)[:, None]
-        curve = (1 - t) ** 2 * first + 2 * (1 - t) * t * control + t**2 * second
-        return (curve[:, 0], curve[:, 1])
-
-    def plot_between_network(first, second, con_type, plot_type):
+    def plot_between_network(first, second, con_type):
         selected = df_between_plot.loc[
             df_between_plot["first_group"].eq(first)
             & df_between_plot["second_group"].eq(second)
@@ -258,13 +270,28 @@ def main():
                 fontweight="bold",
                 pad=14,
             )
-            if plot_type == "heatmap":
-                matrix, significant = make_between_matrices(rows)
-                lower_triangle = np.tril(np.ones(matrix.shape, dtype=bool), k=-1)
-                highlighted = significant & lower_triangle
+            matrix, significant = make_between_matrices(rows)
+            lower_triangle = np.tril(np.ones(matrix.shape, dtype=bool), k=-1)
+            highlighted = significant & lower_triangle
+            sns.heatmap(
+                matrix,
+                mask=np.isnan(matrix),
+                cmap=CMAP,
+                vmin=-limit,
+                vmax=limit,
+                square=True,
+                linewidths=0.5,
+                linecolor="white",
+                cbar=False,
+                alpha=0.18,
+                xticklabels=NETWORK_ORDER,
+                yticklabels=NETWORK_ORDER,
+                ax=ax,
+            )
+            if highlighted.any():
                 sns.heatmap(
                     matrix,
-                    mask=np.isnan(matrix),
+                    mask=~highlighted,
                     cmap=CMAP,
                     vmin=-limit,
                     vmax=limit,
@@ -272,105 +299,31 @@ def main():
                     linewidths=0.5,
                     linecolor="white",
                     cbar=False,
-                    alpha=0.18,
                     xticklabels=NETWORK_ORDER,
                     yticklabels=NETWORK_ORDER,
                     ax=ax,
                 )
-                if highlighted.any():
-                    sns.heatmap(
-                        matrix,
-                        mask=~highlighted,
-                        cmap=CMAP,
-                        vmin=-limit,
-                        vmax=limit,
-                        square=True,
-                        linewidths=0.5,
-                        linecolor="white",
-                        cbar=False,
-                        xticklabels=NETWORK_ORDER,
-                        yticklabels=NETWORK_ORDER,
-                        ax=ax,
-                    )
-                for i, j in zip(*np.where(highlighted)):
-                    beta_value = matrix[i, j]
-                    ax.text(
-                        j + 0.5,
-                        i + 0.5,
-                        f"{beta_value:.3f}",
-                        ha="center",
-                        va="center",
-                        fontsize=12,
-                        color="white" if abs(beta_value) > 0.65 * limit else "black",
-                    )
-                ax.set_xticklabels(
-                    NETWORK_ORDER,
-                    rotation=30,
-                    ha="right",
-                    rotation_mode="anchor",
-                    fontsize=18,
+            for i, j in zip(*np.where(highlighted)):
+                beta_value = matrix[i, j]
+                ax.text(
+                    j + 0.5,
+                    i + 0.5,
+                    f"{beta_value:.3f}",
+                    ha="center",
+                    va="center",
+                    fontsize=12,
+                    color="white" if abs(beta_value) > 0.65 * limit else "black",
                 )
-                ax.set_yticklabels(NETWORK_ORDER, rotation=0, fontsize=18)
-                ax.set_xlabel("Network", fontsize=20)
-                ax.set_ylabel("Network", fontsize=20)
-            else:
-                ax.set_aspect("equal")
-                ax.set_xlim(-1.45, 1.45)
-                ax.set_ylim(-1.35, 1.35)
-                ax.set_axis_off()
-                for network in NETWORK_ORDER:
-                    start, end = sector_angles[network]
-                    theta = np.linspace(start, end, 180)
-                    centre = sector_centres[network]
-                    ax.plot(
-                        np.sin(theta),
-                        np.cos(theta),
-                        color=network_color_map[network],
-                        linewidth=3,
-                        zorder=3,
-                    )
-                    ax.text(
-                        1.16 * np.sin(centre),
-                        1.16 * np.cos(centre),
-                        network,
-                        ha="center",
-                        va="center",
-                        fontsize=18,
-                        fontweight="bold",
-                        color=network_color_map[network],
-                    )
-                significant_rows = rows.loc[rows["plot_significant"]]
-                if significant_rows.empty:
-                    message = (
-                        "No corrected pairwise\ncontrasts"
-                        if rows["interaction_p_corrected"].lt(SIG_THRESHOLD).any()
-                        else "Interaction not\nsignificant"
-                    )
-                    ax.text(
-                        0,
-                        0,
-                        message,
-                        ha="center",
-                        va="center",
-                        fontsize=16,
-                        color="0.4",
-                    )
-                ordered_indices = significant_rows["beta"].abs().sort_values().index
-                for row in significant_rows.loc[ordered_indices].itertuples(
-                    index=False
-                ):
-                    x, y = connection_curve(
-                        sector_centres[row.network_a], sector_centres[row.network_b]
-                    )
-                    line_width = 1.5 + 5.5 * abs(row.beta) / limit
-                    ax.plot(
-                        x,
-                        y,
-                        color=CMAP(norm(row.beta)),
-                        linewidth=line_width,
-                        alpha=1,
-                        zorder=2,
-                    )
+            ax.set_xticklabels(
+                NETWORK_ORDER,
+                rotation=30,
+                ha="right",
+                rotation_mode="anchor",
+                fontsize=18,
+            )
+            ax.set_yticklabels(NETWORK_ORDER, rotation=0, fontsize=18)
+            ax.set_xlabel("Network", fontsize=20)
+            ax.set_ylabel("Network", fontsize=20)
         scalar_mappable = ScalarMappable(norm=norm, cmap=CMAP)
         scalar_mappable.set_array([])
         cbar = fig.colorbar(
@@ -378,21 +331,12 @@ def main():
         )
         cbar.set_label("Adjusted $\\beta$", fontsize=18)
         cbar.ax.tick_params(labelsize=16)
-        fig.savefig(
-            network_figure_dir
-            / f"network_between_{plot_type}_{first}_vs_{second}_{con_type}.svg",
-            dpi=600,
-            bbox_inches="tight",
-            facecolor="white",
-        )
-        plt.close(fig)
+        save_plot(fig, network_figure_dir /
+                  f"network_between_heatmap_{first}_vs_{second}_{con_type}")
 
     for first, second in comparison_pairs:
-        for con_type in ["aec", "dwpli"]:
-            for plot_type in ["heatmap", "circos"]:
-                plot_between_network(
-                    first=first, second=second, con_type=con_type, plot_type=plot_type
-                )
+        for con_type in con_types:
+            plot_between_network(first=first, second=second, con_type=con_type)
 
 
 if __name__ == "__main__":

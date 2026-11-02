@@ -1,37 +1,35 @@
 """Whole-brain clustering and efficiency distributions."""
 
-from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
-from config import GROUP_LABELS, comparison_dir, conn_labels, group_palette
+from config import GROUP_LABELS, plot_results_dir, figure_dir, conn_labels, group_palette, PLOT_GROUPS, freq_bands
+from plotting_utils import add_significance_brackets, SHOW_SIGNIFICANCE
 
 
 def main():
+    output_dir = plot_results_dir / "whole_brain_topology"
     df_net_metric_groups = pd.read_csv(
-        comparison_dir / "whole_brain" / "whole_brain_metrics.csv"
+        output_dir / "whole_brain_metrics.csv"
     )
-    freq_order = ["Theta", "Alpha", "Beta", "Gamma"]
+    freq_order = list(freq_bands)
     conn_order = ["aec", "dwpli"]
-    group_order = ["NCBP_trans", "NCBP_nontrans", "HC"]
-    GROUP_LABELS = {
-        "NCBP_trans": "Transitioners",
-        "NCBP_nontrans": "Non-Transitioners",
-        "HC": "Healthy Controls",
-    }
-    group_palette = {
-        "NCBP_trans": "#D55E00",
-        "NCBP_nontrans": "#009E73",
-        "HC": "#0072B2",
-    }
+    contrasts = pd.concat([
+        pd.read_csv(output_dir / f"whole_brain_{con}_GEE_band_contrasts.csv")
+        for con in conn_order
+    ], ignore_index=True)
+    group_order = PLOT_GROUPS
     group_markers = {"NCBP_trans": "o", "NCBP_nontrans": "s", "HC": "^"}
-    metrics_whole_brain = ["global_clustering", "global_efficiency"]
     metric_ylabels = {
         "global_clustering": "Clustering coefficient (unitless)",
         "global_efficiency": "Efficiency (unitless)",
     }
-    whole_brain_plot_dir = Path(comparison_dir) / "whole_brain" / "FIGURES"
+    metrics_whole_brain = list(metric_ylabels)
+    metric_titles = {
+        metric: metric.replace('_', ' ').capitalize() for metric in metrics_whole_brain
+    }
+    whole_brain_plot_dir = figure_dir / "whole_brain_topology" / "FIGURES"
     whole_brain_plot_dir.mkdir(parents=True, exist_ok=True)
     df_whole_brain_plot = df_net_metric_groups.copy()
     df_whole_brain_plot = df_whole_brain_plot.loc[
@@ -85,7 +83,7 @@ def main():
             for body in violin["bodies"]:
                 body.set_facecolor(color)
                 body.set_edgecolor(color)
-                body.set_alpha(0.65)
+                body.set_alpha(.65)
         jitter = rng.uniform(
             -violin_width * 0.15, violin_width * 0.15, size=values.size
         )
@@ -94,7 +92,7 @@ def main():
             values,
             s=15,
             color=color,
-            alpha=0.4,
+            alpha=1.0,
             edgecolors="none",
             zorder=3,
         )
@@ -128,12 +126,15 @@ def main():
             whole_brain_plot_dir / f"{filename}.svg",
             dpi=600,
             bbox_inches="tight",
-            transparent=True,
+            facecolor="white",
         )
+        fig.savefig(whole_brain_plot_dir / f"{filename}.png", dpi=600,
+                    bbox_inches="tight", facecolor="white")
 
     with plt.rc_context(
         {
             "font.size": 20,
+            "svg.fonttype": "none",
             "figure.facecolor": "white",
             "axes.facecolor": "white",
             "text.color": "black",
@@ -175,7 +176,7 @@ def main():
                 ax.set_xlabel("")
                 style_metric_axis(ax, metric)
                 ax.set_title(
-                    f"{conn_labels[con_type]} · {metric.replace('_', ' ').capitalize()}\n"
+                    f"{conn_labels[con_type]} · {metric_titles[metric]}\n"
                     "Mean across bands",
                     fontsize=20,
                     fontweight="bold",
@@ -228,8 +229,13 @@ def main():
                 ax.set_xlim(-0.6, len(freq_order) - 0.4)
                 ax.set_xlabel("Frequency band", fontsize=20, labelpad=10)
                 style_metric_axis(ax, metric)
+                rows = contrasts.loc[
+                    contrasts.con_type.eq(con_type) & contrasts.metric.eq(metric)
+                ]
+                add_significance_brackets(ax, rows, freq_order, "band", offsets,
+                                          show=SHOW_SIGNIFICANCE)
                 ax.set_title(
-                    f"{conn_labels[con_type]} · {metric.replace('_', ' ').capitalize()}",
+                    f"{conn_labels[con_type]} · {metric_titles[metric]}",
                     fontsize=20,
                     fontweight="bold",
                     pad=12,

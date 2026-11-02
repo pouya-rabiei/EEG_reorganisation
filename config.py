@@ -7,14 +7,21 @@ import numpy as np
 import pandas as pd
 
 basepath = Path(
-    os.environ.get("EEG_PROJECT_ROOT", Path(__file__).resolve().parent.parent)
+    os.environ.get("EEG_PROJECT_ROOT", Path(__file__).resolve().parent)
 )
 comparison_dir = Path(
-    os.environ.get("EEG_RESULTS_DIR", Path(__file__).resolve().parent / "results")
+    os.environ.get("EEG_RESULTS_DIR", basepath / "derivatives" / "GROUP_CONN_NETW")
 )
-spectral_dir = comparison_dir / "spectral"
-PREPROCESS_DIR = basepath / "derivatives" / "PREPROCESS_CONN"
-SOURCE_DIR = basepath / "derivatives" / "CONN_NETW"
+spectral_dir = comparison_dir / "SPECTRAL"
+plot_results_dir = Path(os.environ.get("EEG_PLOT_RESULTS_DIR", comparison_dir))
+figure_dir = Path(os.environ.get("EEG_FIGURES_DIR", plot_results_dir))
+plot_spectral_dir = plot_results_dir / "SPECTRAL"
+PREPROCESS_DIR = Path(os.environ.get(
+    "EEG_PREPROCESS_DIR", basepath / "derivatives" / "PREPROCESS_CONN"
+))
+SOURCE_DIR = Path(os.environ.get(
+    "EEG_SOURCE_DIR", basepath / "derivatives" / "CONN_NETW"
+))
 centroid_file = Path(
     os.environ.get(
         "SCHAEFER_CENTROIDS",
@@ -40,6 +47,17 @@ NETWORK_ORDER = [
     "Default",
 ]
 network_names = NETWORK_ORDER
+WITHIN_NETWORKS = NETWORK_ORDER.copy()
+TOPOLOGY_NETWORKS = [network for network in NETWORK_ORDER if network != "Limbic"]
+WITHIN_NETWORK_LABELS = {
+    "Vis": "Visual",
+    "SomMot": "Somatomotor",
+    "DorsAttn": "Dorsal Attention",
+    "SalVentAttn": "Salience/Ventral Attention",
+    "Default": "Default Mode",
+    "Limbic": "Limbic",
+    "Cont": "Control",
+}
 network_pairs = list(combinations(NETWORK_ORDER, 2))
 ANALYSIS_GROUPS = ["HC", "NCBP_nontrans", "NCBP_trans"]
 PLOT_GROUPS = ["NCBP_trans", "NCBP_nontrans", "HC"]
@@ -91,6 +109,7 @@ NBS_NETWORK_COLORS = {
     "Default": "#E377C2",
 }
 
+
 def load_subject_info():
     tables = []
     for group, folder in [("ncbp", "ncbp"), ("ncbphc", "ncbpmc")]:
@@ -128,8 +147,10 @@ def load_subject_info():
     info["sample_id"] = info["group"] + "_" + info["subject"]
     return info
 
+
 def load_parcels():
     return pd.read_csv(centroid_file)
+
 
 def load_matrix(source_group, subject, con, band, labels):
     path = derivpath[source_group] / subject / f"{subject}_{con}_matrix_{band}.csv"

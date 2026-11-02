@@ -119,7 +119,7 @@ def main():
     data = subject_info.merge(
         pd.concat(tables), on=["group", "subject"], validate="one_to_one"
     )
-    output_dir = comparison_dir / "preprocessing"
+    output_dir = comparison_dir / "preprocessing_qc"
     output_dir.mkdir(parents=True, exist_ok=True)
     data.to_csv(output_dir / "preprocessing_subjects.csv", index=False)
     run_group_qc_statistics(data, output_dir)

@@ -1,228 +1,112 @@
-"""Within-network topology boxplots and brain maps."""
+"""Within-network topology: distributions and significance-masked glass brains."""
 
-from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from matplotlib.patches import Patch
 from matplotlib.colors import TwoSlopeNorm
 from matplotlib.cm import ScalarMappable
-import seaborn as sns
 import nibabel as nib
 from nilearn import datasets, plotting
 from config import (
-    GROUP_LABELS,
-    NETWORK_ORDER,
-    comparison_dir,
-    conn_labels,
-    group_palette,
-    network_names,
+    GROUP_LABELS, plot_results_dir, figure_dir, conn_labels, con_types,
+    TOPOLOGY_NETWORKS as NETWORK_ORDER, WITHIN_NETWORK_LABELS, load_parcels,
 )
+from plotting_utils import save_plot, plot_network_boxes, plot_rainclouds
+
+METRIC_LABELS = {
+    "within_network_clustering": "Clustering",
+    "within_network_efficiency": "Efficiency",
+}
+
+
+def plot_brain_maps(contrasts, output_dir):
+    supported = (
+        contrasts.passes_interaction_gate.astype(str).str.lower().isin(["true", "1"])
+        & contrasts.p_corrected.lt(.05)
+        & contrasts.interaction_p_corrected.lt(.05)
+    )
+    rows_all = contrasts.loc[contrasts.network.ne("Limbic")].copy()
+    limits = rows_all.groupby("metric").beta.apply(lambda values: values.abs().max())
+    rows_all = rows_all.loc[supported.loc[rows_all.index] & np.isfinite(rows_all.beta)]
+    if rows_all.empty:
+        return
+    atlas = datasets.fetch_atlas_schaefer_2018(
+        n_rois=100, yeo_networks=7, resolution_mm=2, verbose=0
+    )
+    atlas_img = nib.load(atlas.maps)
+    atlas_data = np.asarray(atlas_img.dataobj, dtype=np.int16)
+    lut = atlas.lut.loc[atlas.lut["index"].ne(0), ["index", "name"]].copy()
+    if set(lut["name"]) != set(load_parcels()["ROI Name"]):
+        raise ValueError("Schaefer atlas and study parcel names do not match")
+    lut["network"] = lut["name"].str.split("_").str[2]
+    masks = {
+        network: np.isin(atlas_data, lut.loc[lut.network.eq(network), "index"])
+        for network in NETWORK_ORDER if network in contrasts.network.unique()
+    }
+    keys = ["first_group", "second_group", "con_type", "band", "metric"]
+    for (first, second, con, band, metric), rows in rows_all.groupby(keys, sort=False):
+        limit = float(limits[metric]) or 1.
+        volume = np.zeros(atlas_data.shape, dtype=np.float32)
+        for row in rows.itertuples(index=False):
+            if np.isfinite(row.beta):
+                volume[masks[row.network]] = row.beta
+        significant = rows.network.unique().tolist()
+        names = ", ".join(WITHIN_NETWORK_LABELS[n] for n in significant)
+        network_title = f"{names} {'network' if len(significant) == 1 else 'networks'}"
+        fig, ax = plt.subplots(figsize=(12, 5.5))
+        fig.suptitle(
+            f"{GROUP_LABELS[first]} vs {GROUP_LABELS[second]}\n"
+            f"{conn_labels[con]} · {band} · {METRIC_LABELS[metric]}",
+            fontsize=20, y=.99,
+        )
+        fig.text(.5, .82, network_title, ha="center", fontsize=16)
+        display = plotting.plot_glass_brain(
+            nib.Nifti1Image(volume, atlas_img.affine), display_mode="lyrz",
+            plot_abs=False, threshold=0, resampling_interpolation="nearest",
+            cmap="turbo", vmin=-limit, vmax=limit, colorbar=False,
+            annotate=False, black_bg=False, axes=ax,
+        )
+        # Outlines mark network-level significance, not parcel-level tests.
+        for network in significant:
+            display.add_contours(
+                nib.Nifti1Image(masks[network].astype(np.float32), atlas_img.affine),
+                threshold=None, levels=[.5], colors="black", linewidths=2.5,
+            )
+        cbar = fig.colorbar(
+            ScalarMappable(norm=TwoSlopeNorm(0, -limit, limit), cmap="turbo"),
+            cax=fig.add_axes([.2, .1, .6, .035]), orientation="horizontal",
+        )
+        cbar.set_label("Adjusted β (first − second)", fontsize=18)
+        cbar.ax.tick_params(labelsize=16)
+        fig.subplots_adjust(left=.03, right=.97, top=.73, bottom=.23)
+        filename = f"network_{first}_vs_{second}_{con}_{band}_{metric}_brain"
+        save_plot(fig, output_dir / filename)
 
 
 def main():
-    df_within_net_topo = pd.read_csv(
-        comparison_dir / "network_topology" / "subject_metrics.csv"
-    )
-    topo_contrasts_all = pd.read_csv(
-        comparison_dir / "network_topology" / "GEE_contrasts.csv"
-    )
-    NETWORK_ORDER = [
-        "Vis",
-        "SomMot",
-        "DorsAttn",
-        "SalVentAttn",
-        "Limbic",
-        "Cont",
-        "Default",
+    plt.rcParams["svg.fonttype"] = "none"
+    folder = plot_results_dir / "within_network_topology"
+    data = pd.read_csv(folder / "subject_metrics.csv")
+    contrasts = pd.read_csv(folder / "GEE_contrasts.csv")
+    contrasts[["first_group", "second_group"]] = contrasts.comparison.str.split(" vs ", expand=True)
+    estimates = pd.read_csv(folder / "GEE_adjusted_means.csv")
+    data = data.loc[data.network.isin(NETWORK_ORDER)].copy()
+    contrasts = contrasts.loc[contrasts.network.isin(NETWORK_ORDER)].copy()
+    estimates = estimates.loc[estimates.network.isin(NETWORK_ORDER)].copy()
+    output_dir = figure_dir / "within_network_topology" / "FIGURES"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for con in con_types:
+        for metric, label in METRIC_LABELS.items():
+            plot_network_boxes(data, con, metric, label, output_dir, contrasts)
+    supported = contrasts.loc[
+        contrasts.passes_interaction_gate.astype(str).str.lower().isin(["true", "1"])
+        & contrasts.p_corrected.lt(.05)
+        & contrasts.interaction_p_corrected.lt(.05)
     ]
-    BAND_ORDER = ["Theta", "Alpha", "Beta", "Gamma"]
-    GROUP_ORDER = ["NCBP_trans", "NCBP_nontrans", "HC"]
-    group_palette = {
-        "NCBP_trans": "#D55E00",
-        "NCBP_nontrans": "#009E73",
-        "HC": "#0072B2",
-    }
-    topology_metric_labels = {
-        "within_network_clustering": "Clustering",
-        "within_network_efficiency": "Efficiency",
-    }
-    network_figure_dir = Path(comparison_dir) / "network_topology" / "FIGURES"
-    network_figure_dir.mkdir(parents=True, exist_ok=True)
-
-    def plot_within_topology_box(df, con_type, metric, out_file):
-        df_sub = df.loc[
-            df["con_type"].eq(con_type)
-            & df["analysis_group"].isin(GROUP_ORDER)
-            & df["network"].isin(NETWORK_ORDER)
-            & df["freq_band"].isin(BAND_ORDER)
-        ].copy()
-        for column in [metric, "age"]:
-            df_sub[column] = pd.to_numeric(df_sub[column], errors="coerce").replace(
-                [np.inf, -np.inf], np.nan
-            )
-        df_sub = df_sub.dropna(
-            subset=[metric, "age", "sex", "sample_id", "analysis_group"]
-        )
-        if df_sub.empty:
-            return
-        y_label = topology_metric_labels[metric]
-        fig, axes = plt.subplots(2, 2, figsize=(16, 11), sharey=True)
-        for ax, band in zip(axes.flat, BAND_ORDER):
-            temp = df_sub.loc[df_sub["freq_band"].eq(band)]
-            if temp.empty:
-                ax.set_visible(False)
-                continue
-            sns.boxplot(
-                data=temp,
-                x="network",
-                y=metric,
-                hue="analysis_group",
-                order=NETWORK_ORDER,
-                hue_order=GROUP_ORDER,
-                palette=group_palette,
-                dodge=True,
-                width=0.8,
-                gap=0.1,
-                saturation=1,
-                whis=1.5,
-                showfliers=False,
-                linewidth=1.0,
-                boxprops={"edgecolor": "black", "linewidth": 1.0, "alpha": 0.8},
-                medianprops={"color": "black", "linewidth": 1.6},
-                whiskerprops={"color": "black", "linewidth": 1.0},
-                capprops={"color": "black", "linewidth": 1.0},
-                legend=False,
-                ax=ax,
-            )
-            sns.stripplot(
-                data=temp,
-                x="network",
-                y=metric,
-                hue="analysis_group",
-                order=NETWORK_ORDER,
-                hue_order=GROUP_ORDER,
-                palette=group_palette,
-                dodge=True,
-                jitter=0.15,
-                size=3.5,
-                alpha=0.7,
-                edgecolor="none",
-                linewidth=0,
-                zorder=4,
-                legend=False,
-                ax=ax,
-            )
-            ax.set_xlabel("Network", fontsize=18)
-            ax.set_title(
-                f"{conn_labels[con_type]} · {band} · {y_label}",
-                fontsize=20,
-                fontweight="bold",
-                pad=12,
-            )
-            ax.set_ylabel(y_label, fontsize=18)
-            ax.tick_params(axis="both", labelsize=16)
-            plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
-            ax.set_axisbelow(True)
-            ax.xaxis.grid(False)
-            ax.yaxis.grid(True, color="0.85", linewidth=0.7)
-            sns.despine(ax=ax)
-        legend_handles = [
-            Patch(facecolor=group_palette[group], label=GROUP_LABELS[group])
-            for group in GROUP_ORDER
-        ]
-        fig.legend(
-            handles=legend_handles,
-            loc="upper center",
-            bbox_to_anchor=(0.5, 0.955),
-            ncol=3,
-            frameon=False,
-            fontsize=20,
-        )
-        fig.tight_layout(rect=[0, 0, 1, 0.89], h_pad=2.0, w_pad=2.0)
-        fig.savefig(out_file, dpi=600, bbox_inches="tight", transparent=True)
-        plt.close(fig)
-
-    for con_type in ["aec", "dwpli"]:
-        for metric in topology_metric_labels:
-            plot_within_topology_box(
-                df=df_within_net_topo,
-                con_type=con_type,
-                metric=metric,
-                out_file=network_figure_dir
-                / f"network_three_groups_{con_type}_{metric}_boxplot.svg",
-            )
-    map_rows = topo_contrasts_all.loc[
-        topo_contrasts_all["passes_interaction_gate"].eq(True)
-        & topo_contrasts_all["metric"].isin(topology_metric_labels)
-    ].copy()
-    if map_rows.empty:
-        pass
-    else:
-        atlas = datasets.fetch_atlas_schaefer_2018(
-            n_rois=100, yeo_networks=7, resolution_mm=2, verbose=0
-        )
-        atlas_img = nib.load(atlas.maps)
-        atlas_data = np.asarray(atlas_img.dataobj, dtype=np.int16)
-        atlas_lut = atlas.lut.loc[atlas.lut["index"].ne(0), ["index", "name"]].copy()
-        atlas_lut["network"] = atlas_lut["name"].astype(str).str.split("_").str[2]
-        colour_limit = float(map_rows["beta"].abs().max())
-        colour_norm = TwoSlopeNorm(vmin=-colour_limit, vcenter=0, vmax=colour_limit)
-        map_keys = ["first_group", "second_group", "con_type", "band", "metric"]
-        for key, rows in map_rows.groupby(map_keys, sort=False, observed=True):
-            first, second, con_type, band, metric = key
-            effects = dict(zip(rows["network"], rows["beta"]))
-            network_names = ", ".join(effects)
-            effect_data = np.zeros(atlas_data.shape, dtype=np.float32)
-            for parcel_value, network in atlas_lut[["index", "network"]].itertuples(
-                index=False, name=None
-            ):
-                if network in effects:
-                    effect_data[atlas_data == parcel_value] = effects[network]
-            effect_img = nib.Nifti1Image(effect_data, atlas_img.affine)
-            fig, ax = plt.subplots(figsize=(12, 5.5))
-            fig.suptitle(
-                f"{GROUP_LABELS[first]} vs {GROUP_LABELS[second]}",
-                fontsize=20,
-                fontweight="bold",
-                y=0.98,
-            )
-            fig.text(
-                0.5,
-                0.88,
-                f"{conn_labels[con_type]} · {band} · {topology_metric_labels[metric]} · "
-                f"{network_names} {'network' if len(effects) == 1 else 'networks'}",
-                ha="center",
-                fontsize=18,
-            )
-            plotting.plot_glass_brain(
-                effect_img,
-                display_mode="lyrz",
-                plot_abs=False,
-                threshold=0,
-                cmap="turbo",
-                vmin=-colour_limit,
-                vmax=colour_limit,
-                colorbar=False,
-                annotate=False,
-                black_bg=False,
-                axes=ax,
-            )
-            scalar_mappable = ScalarMappable(norm=colour_norm, cmap="turbo")
-            scalar_mappable.set_array([])
-            cax = fig.add_axes([0.2, 0.1, 0.6, 0.035])
-            cbar = fig.colorbar(scalar_mappable, cax=cax, orientation="horizontal")
-            cbar.set_label("Adjusted $\\beta$", fontsize=18)
-            cbar.ax.tick_params(labelsize=16)
-            fig.subplots_adjust(left=0.03, right=0.97, top=0.77, bottom=0.23)
-            fig.savefig(
-                network_figure_dir
-                / f"network_{first}_vs_{second}_{con_type}_{band}_{metric}_brain.svg",
-                dpi=600,
-                bbox_inches="tight",
-                facecolor="white",
-            )
-            plt.close(fig)
+    keys = ["con_type", "band", "metric", "network"]
+    raincloud_estimates = estimates.merge(supported[keys].drop_duplicates(), on=keys)
+    plot_rainclouds(data, raincloud_estimates, contrasts, output_dir, METRIC_LABELS)
+    plot_brain_maps(contrasts, output_dir)
 
 
 if __name__ == "__main__":

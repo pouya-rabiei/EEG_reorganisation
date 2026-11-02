@@ -4,9 +4,10 @@ import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
+from patsy import build_design_matrices
 from statsmodels.stats.multitest import multipletests
 from config import (
-    ANALYSIS_GROUPS, NETWORK_ORDER, comparison_dir, comparison_specs,
+    ANALYSIS_GROUPS, WITHIN_NETWORKS as NETWORK_ORDER, comparison_dir, comparison_specs,
     con_types, freq_bands,
 )
 
@@ -44,6 +45,7 @@ def main():
     model_rows = []
     term_tables = []
     contrast_rows = []
+    adjusted_rows = []
     for con_type in con_types:
         for metric in metrics:
             for band in freq_bands:
@@ -96,6 +98,7 @@ def main():
                     "n_rows": int(len(df)),
                     "n_subjects": int(df["sample_id"].nunique()),
                     "converged": bool(result.converged),
+                    "n_networks_modelled": len(NETWORK_ORDER),
                 }
                 model_rows.append(
                     {
@@ -128,6 +131,26 @@ def main():
                 for column, value in model_metadata.items():
                     terms[column] = value
                 term_tables.append(terms)
+                reference = df.drop_duplicates("sample_id")[["age", "sex"]]
+                for network in NETWORK_ORDER:
+                    for group in ANALYSIS_GROUPS:
+                        design = build_design_matrices(
+                            [result.model.data.design_info],
+                            reference.assign(analysis_group=group, network=network),
+                        )[0]
+                        estimate = result.t_test(np.asarray(design).mean(axis=0))
+                        ci = np.asarray(estimate.conf_int()).ravel()
+                        observed = df.loc[
+                            df.analysis_group.eq(group) & df.network.eq(network), metric
+                        ]
+                        adjusted_rows.append({
+                            **model_metadata, "network": network, "analysis_group": group,
+                            "n": len(observed), "observed_mean": observed.mean(),
+                            "observed_sd": observed.std(),
+                            "adjusted_mean": float(np.squeeze(estimate.effect)),
+                            "se": float(np.squeeze(estimate.sd)),
+                            "ci_low": ci[0], "ci_high": ci[1],
+                        })
                 param_names = list(result.params.index)
 
                 def group_vector(group, network):
@@ -205,6 +228,7 @@ def main():
     contrasts["passes_interaction_gate"] = contrasts["p_corrected"].lt(
         0.05
     ) & contrasts["interaction_p_corrected"].lt(0.05)
+    pd.DataFrame(adjusted_rows).to_csv(output_dir / "GEE_adjusted_means.csv", index=False)
     models.to_csv(output_dir / "model_info.csv", index=False)
     terms.to_csv(output_dir / "GEE_omnibus.csv", index=False)
     contrasts.to_csv(output_dir / "GEE_contrasts.csv", index=False)

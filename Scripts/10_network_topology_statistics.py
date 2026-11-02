@@ -4,9 +4,10 @@ import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
+from patsy import build_design_matrices
 from statsmodels.stats.multitest import multipletests
 from config import (
-    ANALYSIS_GROUPS, NETWORK_ORDER, comparison_dir, comparison_specs,
+    ANALYSIS_GROUPS, TOPOLOGY_NETWORKS as NETWORK_ORDER, comparison_dir, comparison_specs,
     con_types, freq_bands,
 )
 
@@ -17,15 +18,15 @@ def correct_fdr(df, family_cols, correction="fdr_bh"):
     for _, family in df.groupby(family_cols, sort=False, observed=True):
         valid = family.loc[np.isfinite(family["p_value"])]
         if not valid.empty:
-            df.loc[valid.index, "p_corrected"] = multipletests(
-                valid["p_value"], method=correction
-            )[1]
+            p = valid["p_value"]
+            adjusted = pd.Series(multipletests(p, method=correction)[1], index=p.index)
+            df.loc[valid.index, "p_corrected"] = adjusted.loc[valid.index]
     df["significant_corrected"] = np.where(df["p_corrected"].lt(0.05), "Yes", "No")
     return df
 
 
 def main():
-    output_dir = comparison_dir / "network_topology"
+    output_dir = comparison_dir / "within_network_topology"
     data = pd.read_csv(output_dir / "subject_metrics.csv")
     metrics = ["within_network_clustering", "within_network_efficiency"]
     analysis_type = "network_topology"
@@ -44,6 +45,7 @@ def main():
     model_rows = []
     term_tables = []
     contrast_rows = []
+    adjusted_rows = []
     for con_type in con_types:
         for metric in metrics:
             for band in freq_bands:
@@ -77,6 +79,7 @@ def main():
                     raise ValueError(
                         f"An expected group-network cell is empty: {model_label}"
                     )
+                model_networks = NETWORK_ORDER
                 formula = f"{metric} ~ analysis_group * network + age + C(sex)"
                 result = smf.gee(
                     formula=formula,
@@ -96,13 +99,14 @@ def main():
                     "n_rows": int(len(df)),
                     "n_subjects": int(df["sample_id"].nunique()),
                     "converged": bool(result.converged),
+                    "n_networks_modelled": len(model_networks),
                 }
                 model_rows.append(
                     {
                         **model_metadata,
                         "formula": formula,
                         "reference_group": "HC",
-                        "reference_location": NETWORK_ORDER[0],
+                        "reference_location": model_networks[0],
                         **{
                             f"n_{group}": int(
                                 df.loc[
@@ -129,20 +133,43 @@ def main():
                     terms[column] = value
                 term_tables.append(terms)
                 param_names = list(result.params.index)
+                # Standardize each group to the same pooled participant age/sex mix.
+                reference = df.drop_duplicates("sample_id")[["age", "sex"]].copy()
+                for location in model_networks:
+                    for group in ANALYSIS_GROUPS:
+                        prediction = reference.assign(
+                            analysis_group=group, network=location
+                        )
+                        design = build_design_matrices(
+                            [result.model.data.design_info], prediction
+                        )[0]
+                        estimate = result.t_test(np.asarray(design).mean(axis=0))
+                        ci = np.asarray(estimate.conf_int()).ravel()
+                        observed = df.loc[
+                            df.analysis_group.eq(group) & df["network"].eq(location), metric
+                        ]
+                        adjusted_rows.append({
+                            **model_metadata, "network": location,
+                            "analysis_group": group, "n": int(observed.size),
+                            "observed_mean": observed.mean(), "observed_sd": observed.std(),
+                            "adjusted_mean": float(np.squeeze(estimate.effect)),
+                            "se": float(np.squeeze(estimate.sd)),
+                            "ci_low": ci[0], "ci_high": ci[1],
+                        })
 
                 def group_vector(group, network):
                     vector = np.zeros(len(param_names))
                     if group != "HC":
                         main_term = f"analysis_group[T.{group}]"
                         vector[param_names.index(main_term)] = 1.0
-                        if network != NETWORK_ORDER[0]:
+                        if network != model_networks[0]:
                             interaction_term = (
                                 f"{main_term}:network[T.{network}]"
                             )
                             vector[param_names.index(interaction_term)] = 1.0
                     return vector
 
-                for network in NETWORK_ORDER:
+                for network in model_networks:
                     network_df = df.loc[df["network"].eq(network)]
                     for spec in comparison_specs:
                         first = spec["first_group"]
@@ -205,9 +232,10 @@ def main():
     contrasts["passes_interaction_gate"] = contrasts["p_corrected"].lt(
         0.05
     ) & contrasts["interaction_p_corrected"].lt(0.05)
-    models.to_csv(output_dir / "model_info.csv", index=False)
-    terms.to_csv(output_dir / "GEE_omnibus.csv", index=False)
-    contrasts.to_csv(output_dir / "GEE_contrasts.csv", index=False)
+    models.to_csv(output_dir / "model_info.csv", index=False, na_rep="NA")
+    pd.DataFrame(adjusted_rows).to_csv(output_dir / "GEE_adjusted_means.csv", index=False, na_rep="NA")
+    terms.to_csv(output_dir / "GEE_omnibus.csv", index=False, na_rep="NA")
+    contrasts.to_csv(output_dir / "GEE_contrasts.csv", index=False, na_rep="NA")
 
 
 if __name__ == "__main__":

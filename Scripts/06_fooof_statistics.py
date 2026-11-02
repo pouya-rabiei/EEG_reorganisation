@@ -17,8 +17,8 @@ from config import (
 
 def main():
     spectral_dir.mkdir(parents=True, exist_ok=True)
-    fooof_net_all = pd.read_csv(spectral_dir / "fooof_network_summary.csv")
-    fooof_roi_all = pd.read_csv(spectral_dir / "fooof_roi_all.csv")
+    fooof_net_all = pd.read_csv(spectral_dir / "fooof_network_summary_all_groups.csv")
+    fooof_roi_all = pd.read_csv(spectral_dir / "fooof_roi_all_groups.csv")
     ANALYSIS_GROUPS = ["HC", "NCBP_nontrans", "NCBP_trans"]
     fooof_network_metrics = ["exponent_mean", "offset_mean", "alpha_pw_mean"]
     metric_display_names = {

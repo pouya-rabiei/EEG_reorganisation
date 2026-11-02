@@ -1,4 +1,6 @@
 results/
+plots/
+output_plots/
 __pycache__/
 *.py[cod]
 .venv/

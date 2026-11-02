@@ -11,7 +11,7 @@ from config import (
     GROUP_LABELS,
     NBS_NETWORK_COLORS,
     NBS_NETWORK_ORDER,
-    comparison_dir,
+    plot_results_dir as comparison_dir, figure_dir as plot_output_dir,
     conn_labels,
     load_parcels,
 )
@@ -155,7 +155,7 @@ def main():
         stem = f"{comparison}_{con}_{band}_t{threshold:.1f}"
         test_dir = comparison_dir / "nbs" / comparison / f"nbs_t_{threshold:.1f}"
         figure_dir = (
-            comparison_dir / "nbs" / comparison / f"figures_nbs_t_{threshold:.1f}"
+            plot_output_dir / "nbs" / comparison / f"figures_nbs_t_{threshold:.1f}"
         )
         figure_dir.mkdir(parents=True, exist_ok=True)
         matrix = (

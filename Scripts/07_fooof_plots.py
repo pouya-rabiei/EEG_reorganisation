@@ -9,21 +9,37 @@ from matplotlib.patches import Patch
 from matplotlib.colors import Normalize, TwoSlopeNorm
 import nibabel as nib
 from nilearn import datasets, plotting
-from config import GROUP_LABELS, NETWORK_ORDER, PLOT_GROUPS, group_palette, spectral_dir
+from config import GROUP_LABELS, NETWORK_ORDER, PLOT_GROUPS, group_palette, plot_spectral_dir as spectral_dir, figure_dir
+from plotting_utils import add_significance_brackets, SHOW_SIGNIFICANCE
 
 
-def main():
-    fooof_net_all = pd.read_csv(spectral_dir / "fooof_network_summary_all.csv")
-    fooof_contrasts_df = pd.read_csv(spectral_dir / "FOOOF_network_GEE_contrasts.csv")
-    fooof_roi_plot = pd.read_csv(spectral_dir / "fooof_roi_all.csv")
+def main(boxes_only=False):
+    fooof_net_all = pd.read_csv(spectral_dir / "fooof_network_summary_all_groups.csv")
+    contrast_file = spectral_dir / "FOOOF_network_GEE_contrasts.csv"
+    if not contrast_file.exists():
+        contrast_file = spectral_dir / "FOOOF_network_GEE_contrastsss.csv"
+    fooof_contrasts_df = pd.read_csv(contrast_file)
+    if "passes_interaction_gate" not in fooof_contrasts_df:
+        omnibus = pd.read_csv(spectral_dir / "FOOOF_network_GEE_omnibus.csv")
+        interaction = omnibus.loc[omnibus.term.eq("analysis_group:network")]
+        interaction_p = fooof_contrasts_df.metric.map(
+            interaction.set_index("metric").p_corrected
+        )
+        fooof_contrasts_df["passes_interaction_gate"] = (
+            fooof_contrasts_df.p_corrected.lt(.05) & interaction_p.lt(.05)
+        )
     fooof_glass_dir = spectral_dir / "FOOOF_GLASS_BRAIN"
-    fooof_roi_adjusted_means_df = pd.read_csv(
-        fooof_glass_dir / "FOOOF_ROI_adjusted_means.csv"
-    )
-    fooof_roi_adjusted_effects_df = pd.read_csv(
-        fooof_glass_dir / "FOOOF_ROI_adjusted_effect_sizes_FDR.csv"
-    )
-    fooof_fig_dir = Path(spectral_dir) / "FOOOF_BOXPLOTS"
+    if not boxes_only:
+        fooof_roi_plot = pd.read_csv(spectral_dir / "fooof_roi_all_groups.csv")
+        fooof_roi_adjusted_means_df = pd.read_csv(
+            fooof_glass_dir / "FOOOF_ROI_adjusted_means.csv"
+        )
+        fooof_roi_adjusted_effects_df = pd.read_csv(
+            fooof_glass_dir / "FOOOF_ROI_adjusted_effect_sizes_FDR.csv"
+        )
+    fooof_glass_dir = figure_dir / "SPECTRAL" / "FOOOF_GLASS_BRAIN"
+    fooof_glass_dir.mkdir(parents=True, exist_ok=True)
+    fooof_fig_dir = figure_dir / "SPECTRAL" / "FOOOF_BOXPLOTS"
     fooof_fig_dir.mkdir(parents=True, exist_ok=True)
     NETWORK_ORDER = [
         "Vis",
@@ -55,6 +71,7 @@ def main():
     with plt.rc_context(
         {
             "font.size": 18,
+            "svg.fonttype": "none",
             "figure.facecolor": "white",
             "axes.facecolor": "white",
             "text.color": "black",
@@ -109,7 +126,7 @@ def main():
                             "facecolor": group_palette[group],
                             "edgecolor": "black",
                             "linewidth": 1.0,
-                            "alpha": 0.8,
+                            "alpha": .8,
                         },
                         medianprops={"color": "black", "linewidth": 1.6},
                         whiskerprops={"color": "black", "linewidth": 1.0},
@@ -119,7 +136,7 @@ def main():
                             "markersize": 3,
                             "markerfacecolor": group_palette[group],
                             "markeredgecolor": "none",
-                            "alpha": 0.5,
+                            "alpha": 1.0,
                         },
                     )
                     if SHOW_POINTS:
@@ -130,7 +147,7 @@ def main():
                             s=12,
                             color=group_palette[group],
                             edgecolors="none",
-                            alpha=0.7,
+                            alpha=1.0,
                             zorder=4,
                         )
             ax.set_xticks(np.arange(len(NETWORK_ORDER)))
@@ -168,13 +185,21 @@ def main():
                 frameon=False,
                 fontsize=20,
             )
+            add_significance_brackets(
+                ax, contrast_data.loc[contrast_data.metric.eq(metric)],
+                NETWORK_ORDER, "network", group_offsets, show=SHOW_SIGNIFICANCE,
+            )
             fig.savefig(
                 fooof_fig_dir / f"FOOOF_boxplot_{metric}.svg",
                 dpi=600,
                 bbox_inches="tight",
-                transparent=True,
+                transparent=False,
             )
+            fig.savefig(fooof_fig_dir / f"FOOOF_boxplot_{metric}.png",
+                        dpi=600, bbox_inches="tight", facecolor="white")
             plt.close(fig)
+    if boxes_only:
+        return
     METRIC_LABELS = {
         "exponent": "Exponent",
         "offset": "Offset",

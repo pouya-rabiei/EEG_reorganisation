@@ -6,21 +6,17 @@ from glob import glob
 import numpy as np
 import pandas as pd
 import bct
-import mne
 from joblib import Parallel, delayed
-from mne.datasets import fetch_fsaverage
-from mne.beamformer import make_lcmv, apply_lcmv_epochs
-from mne.time_frequency import psd_array_multitaper
-from mne_connectivity import spectral_connectivity_epochs, envelope_correlation
-from fooof import FOOOF
-from fooof.utils import interpolate_spectrum
 from config import (
     DENSITY,
     RANGE,
     NETWORK_ORDER,
+    WITHIN_NETWORKS,
+    TOPOLOGY_NETWORKS,
     N_JOBS,
     OVERWRITE,
     PREPROCESS_DIR,
+    SOURCE_DIR,
     comparison_dir,
     con_types,
     derivpath,
@@ -33,7 +29,114 @@ from config import (
     spectral_dir,
 )
 
-def main():
+def threshold_binary(matrix, density=DENSITY, within_network=False):
+    """Retain the strongest proportion of unique edges, then binarize."""
+    upper = np.triu_indices(len(matrix), 1)
+    values = matrix[upper]
+    count = int(np.floor(density * len(values)))
+    # Preserve the established deterministic tie ordering for each analysis.
+    order = (np.argsort(-values, kind="stable") if within_network
+             else np.argsort(values, kind="stable")[::-1])
+    selected = order[:count]
+    if count == 0 or np.any(values[selected] <= 0):
+        raise ValueError("Too few positive edges for the requested density")
+    adjacency = np.zeros(matrix.shape, dtype=float)
+    adjacency[upper[0][selected], upper[1][selected]] = 1
+    adjacency += adjacency.T
+    return adjacency, float(values[selected].min())
+
+
+def graph_metrics(adjacency):
+    # Keep genuine zeros; clustering is NA only if no node has two neighbours.
+    clustering = (float(bct.clustering_coef_bu(adjacency).mean())
+                  if np.any(adjacency.sum(axis=1) >= 2) else np.nan)
+    efficiency = float(bct.efficiency_bin(adjacency, local=False))
+    return clustering, efficiency
+
+
+def collect_connectivity(subject_info=None):
+    """Collect existing original matrices; no EEG/source processing is rerun."""
+    info = load_subject_info() if subject_info is None else subject_info
+    parcels = load_parcels()
+    labels = parcels["ROI Name"].tolist()
+    parcel_networks = parcels["ROI Name"].str.split("_").str[2]
+    indices = {net: np.flatnonzero(parcel_networks.eq(net)) for net in NETWORK_ORDER}
+    graph_rows, topology_rows, within_rows, between_rows, files = [], [], [], [], []
+    for person in info.to_dict("records"):
+        group, subject = person["group"], person["subject"]
+        for con in con_types:
+            for band in freq_bands:
+                matrix = load_matrix(group, subject, con, band, labels)
+                common = {**person, "con_type": con, "freq_band": band}
+                files.append({
+                    **common, "matrix_file": str(
+                        derivpath[group] / subject / f"{subject}_{con}_matrix_{band}.csv"
+                    ),
+                })
+                adjacency, cutoff = threshold_binary(matrix)
+                clustering, efficiency = graph_metrics(adjacency)
+                edges = int(adjacency.sum() / 2)
+                graph_rows.append({
+                    **common, "global_clustering": clustering,
+                    "global_efficiency": efficiency, "threshold_value": cutoff,
+                    "threshold_density_target": DENSITY,
+                    "threshold_density_actual": edges / (len(matrix)*(len(matrix)-1)/2),
+                    "n_edges": edges, "n_nodes": len(matrix),
+                })
+                for network in WITHIN_NETWORKS:
+                    idx = indices[network]
+                    block = matrix[np.ix_(idx, idx)]
+                    upper = np.triu_indices(len(idx), 1)
+                    # Threshold the original network submatrix, not the whole-brain graph.
+                    network_adj, network_cutoff = threshold_binary(block, within_network=True)
+                    clustering, efficiency = graph_metrics(network_adj)
+                    within_rows.append({
+                        **common, "network": network,
+                        "mean_within_connectivity": float(block[upper].mean()),
+                        "n_rois_in_network": len(idx),
+                    })
+                    topology_rows.append({
+                        **common, "network": network,
+                        "within_network_clustering": clustering,
+                        "within_network_efficiency": efficiency,
+                        "threshold_density_target": DENSITY,
+                        "within_network_threshold_value": network_cutoff,
+                        "subgraph_n_nodes": len(idx),
+                        "subgraph_n_edges": int(network_adj.sum()/2),
+                        "subgraph_density_actual": float(network_adj[upper].mean()),
+                    })
+                for first, second in network_pairs:
+                    between_rows.append({
+                        **common, "network_a": first, "network_b": second,
+                        "network_pair": f"{first}__{second}",
+                        "mean_between_connectivity": float(
+                            matrix[np.ix_(indices[first], indices[second])].mean()
+                        ),
+                    })
+    for folder_name, rows, filename in [
+        ("whole_brain_topology", graph_rows, "whole_brain_metrics.csv"),
+        ("within_network_topology", topology_rows, "subject_metrics.csv"),
+        ("within_network_connectivity", within_rows, "subject_metrics.csv"),
+        ("between_network_connectivity", between_rows, "subject_metrics.csv"),
+    ]:
+        folder = comparison_dir / folder_name
+        folder.mkdir(parents=True, exist_ok=True)
+        table = pd.DataFrame(rows)
+        if folder_name == "within_network_topology":
+            table = table.loc[table.network.isin(TOPOLOGY_NETWORKS)]
+        table.to_csv(folder / filename, index=False, na_rep="NA")
+    info.to_csv(comparison_dir / "subject_info.csv", index=False)
+    pd.DataFrame(files).to_csv(comparison_dir / "connectivity_files.csv", index=False)
+
+
+def main(connectivity_only=False):
+    import mne
+    from mne.datasets import fetch_fsaverage
+    from mne.beamformer import make_lcmv, apply_lcmv_epochs
+    from mne.time_frequency import psd_array_multitaper
+    from mne_connectivity import spectral_connectivity_epochs, envelope_correlation
+    from fooof import FOOOF
+    from fooof.utils import interpolate_spectrum
 
     def compute_source_psd_fooof_roi(
         vir_ts,
@@ -285,6 +388,8 @@ def main():
             sub_out / f"{sub_id}_source_fooof_flattened.csv",
             sub_out / f"{sub_id}_source_fooof_flattened_network.csv",
         ]
+        if connectivity_only:
+            expected = []
         for band in freq_bands:
             expected.append(sub_out / f"{sub_id}_dwpli_matrix_{band}.csv")
             expected.append(sub_out / f"{sub_id}_aec_matrix_{band}.csv")
@@ -303,15 +408,14 @@ def main():
         if subject_already_done(sub_out, sub_id) and (not overwrite):
             return {"group": group, "subject": sub_id, "status": "skipped", "error": ""}
         try:
-            epoch_files = sorted(glob(opj(datapath, sub_id, "*_ar-epo.fif")))
-            if not epoch_files:
-                return {
-                    "group": group,
-                    "subject": sub_id,
-                    "status": "failed",
-                    "error": "No *_ar-epo.fif file found",
-                }
-            epoch_file = epoch_files[0]
+            epoch_file = Path(datapath) / sub_id / f"{sub_id}_5s-epo.fif"
+            if not epoch_file.exists():
+                epoch_files = sorted(glob(opj(datapath, sub_id, "*_ar-epo.fif")))
+                if len(epoch_files) != 1:
+                    raise FileNotFoundError(
+                        f"Expected {epoch_file.name} or one legacy *_ar-epo.fif"
+                    )
+                epoch_file = epoch_files[0]
             epoch = mne.read_epochs(epoch_file, preload=True, verbose=False)
             epoch.pick("eeg", exclude="bads")
             epoch.set_eeg_reference("average", projection=True, verbose=False)
@@ -326,6 +430,11 @@ def main():
             )
             if forward["nsource"] != sum((s["nuse"] for s in src)):
                 raise RuntimeError("Forward source count does not match source space.")
+            if connectivity_only:
+                source_connectivity_all_bands(
+                    epoch, forward, src, labels, sub_out, sub_id
+                )
+                return {"group": group, "subject": sub_id, "status": "success", "error": ""}
             data_cov = mne.compute_covariance(
                 epoch, method="empirical", keep_sample_mean=True, verbose=False
             )
@@ -438,81 +547,10 @@ def main():
                 "error": error_message,
             }
 
-    def threshold_proportional_binary(mat, density=0.2, con_type="aec"):
-        mat = np.asarray(mat, dtype=float)
-        if mat.ndim != 2 or mat.shape[0] != mat.shape[1]:
-            raise ValueError("Connectivity matrix must be square")
-        if not np.isfinite(mat).all():
-            raise ValueError("Connectivity matrix contains non-finite values")
-        if not np.allclose(mat, mat.T, atol=1e-07, rtol=0):
-            raise ValueError("Connectivity matrix is not symmetric")
-        if not 0 < density < 1:
-            raise ValueError("density must be between 0 and 1")
-        weights = (mat + mat.T) / 2
-        np.fill_diagonal(weights, 0.0)
-        if con_type == "aec":
-            weights = np.maximum(weights, 0.0)
-        elif con_type == "dwpli":
-            weights = np.maximum(weights, 0.0)
-        else:
-            raise ValueError(f"Unknown connectivity type: {con_type}")
-        upper = np.triu_indices_from(weights, k=1)
-        edge_values = weights[upper]
-        n_keep = int(np.floor(density * edge_values.size))
-        n_keep = max(n_keep, 1)
-        if np.count_nonzero(edge_values > 0) < n_keep:
-            raise ValueError("Not enough positive edges for the requested density")
-        strongest = np.argsort(edge_values, kind="stable")[::-1][:n_keep]
-        adj = np.zeros_like(weights, dtype=np.int8)
-        selected_i = upper[0][strongest]
-        selected_j = upper[1][strongest]
-        adj[selected_i, selected_j] = 1
-        adj[selected_j, selected_i] = 1
-        threshold_value = float(edge_values[strongest].min())
-        return (adj, threshold_value)
-
-    def compute_bct_metrics(mat, con_type, density=0.2):
-        adj, thr = threshold_proportional_binary(
-            mat, density=density, con_type=con_type
-        )
-        Gcc = np.nanmean(bct.clustering_coef_bu(adj))
-        Geff = bct.efficiency_bin(adj, local=False)
-        n_nodes = adj.shape[0]
-        possible_edges = n_nodes * (n_nodes - 1) / 2
-        n_edges = int(np.sum(np.triu(adj, k=1)))
-        actual_density = n_edges / possible_edges
-        return {
-            "threshold_value": thr,
-            "threshold_density_target": density,
-            "threshold_density_actual": actual_density,
-            "global_clustering": Gcc,
-            "global_efficiency": Geff,
-            "n_edges": n_edges,
-            "n_nodes": n_nodes,
-        }
-
-    def compute_subgraph_metrics_from_adj(sub_adj):
-        sub_adj = np.array(sub_adj, dtype=int)
-        sub_adj = np.maximum(sub_adj, sub_adj.T)
-        np.fill_diagonal(sub_adj, 0)
-        n = sub_adj.shape[0]
-        possible_edges = n * (n - 1) / 2
-        actual_edges = int(np.sum(np.triu(sub_adj, k=1)))
-        actual_density = actual_edges / possible_edges if possible_edges > 0 else np.nan
-        c_nodes = bct.clustering_coef_bu(sub_adj)
-        Lcc = np.nanmean(c_nodes)
-        Leff = bct.efficiency_bin(sub_adj, local=False)
-        return {
-            "within_network_clustering": float(Lcc) if np.isfinite(Lcc) else np.nan,
-            "within_network_efficiency": float(Leff) if np.isfinite(Leff) else np.nan,
-            "subgraph_n_nodes": n,
-            "subgraph_n_edges": actual_edges,
-            "subgraph_density_actual": actual_density,
-        }
-
     subject_info = load_subject_info()
-    spectral_dir.mkdir(parents=True, exist_ok=True)
-    subject_info.to_csv(spectral_dir / "subject_info.csv", index=False)
+    metadata_dir = SOURCE_DIR if connectivity_only else spectral_dir
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    subject_info.to_csv(metadata_dir / "subject_info.csv", index=False)
     pos = load_parcels()
     labels = pos["ROI Name"].astype(str).to_numpy()
     network_to_indices = {
@@ -535,10 +573,10 @@ def main():
         )
         bem = str(fs_dir / "bem" / "fsaverage-5120-5120-5120-bem-sol.fif")
     status = []
+    status_file = (SOURCE_DIR if connectivity_only else comparison_dir) / "subject_processing_status.csv"
     for group, participants in subject_info.groupby("group", sort=False):
         derivpath[group].mkdir(parents=True, exist_ok=True)
-        status.extend(
-            Parallel(n_jobs=N_JOBS)(
+        for result in Parallel(n_jobs=N_JOBS, return_as="generator_unordered")(
                 (
                     delayed(process_one_subject_source_conn)(
                         s,
@@ -550,26 +588,20 @@ def main():
                     )
                     for s in participants.subject
                 )
-            )
-        )
-    pd.DataFrame(status).to_csv(
-        comparison_dir / "subject_processing_status.csv", index=False
-    )
+            ):
+            status.append(result)
+            pd.DataFrame(status).to_csv(status_file, index=False)
+            print(f"{len(status)}/{len(subject_info)} {group} {result['subject']}: {result['status']} {result['error']}", flush=True)
     if any((row["status"] == "failed" for row in status)):
         raise RuntimeError(
             "Subject extraction failed; see subject_processing_status.csv"
         )
+    if connectivity_only:
+        return
     spectral_tables = {
         name: []
         for name in ["fooof_network_summary", "fooof_roi", "fooof_peak", "psd_interp"]
     }
-    graph_rows, topology_rows, within_rows, between_rows, matrix_index = (
-        [],
-        [],
-        [],
-        [],
-        [],
-    )
     for person in subject_info.to_dict("records"):
         group, sub = (person["group"], person["subject"])
         folder = derivpath[group] / sub
@@ -587,72 +619,21 @@ def main():
                 **person
             )
         )
-        for con in con_types:
-            for band in freq_bands:
-                matrix = load_matrix(group, sub, con, band, labels.tolist())
-                common = {**person, "con_type": con, "freq_band": band}
-                matrix_index.append(
-                    {
-                        **common,
-                        "matrix_file": str(folder / f"{sub}_{con}_matrix_{band}.csv"),
-                    }
-                )
-                adj, threshold = threshold_proportional_binary(matrix, DENSITY, con)
-                graph_rows.append(
-                    {**common, **compute_bct_metrics(matrix, con, DENSITY)}
-                )
-                for net, indices in network_to_indices.items():
-                    block = matrix[np.ix_(indices, indices)]
-                    within_rows.append(
-                        {
-                            **common,
-                            "network": net,
-                            "mean_within_connectivity": block[
-                                np.triu_indices(len(indices), 1)
-                            ].mean(),
-                            "n_rois_in_network": len(indices),
-                        }
-                    )
-                    topology_rows.append(
-                        {
-                            **common,
-                            "network": net,
-                            "threshold_density_target": DENSITY,
-                            "whole_brain_threshold_value": threshold,
-                            **compute_subgraph_metrics_from_adj(
-                                adj[np.ix_(indices, indices)]
-                            ),
-                        }
-                    )
-                for a, b in network_pairs:
-                    between_rows.append(
-                        {
-                            **common,
-                            "network_a": a,
-                            "network_b": b,
-                            "network_pair": f"{a}__{b}",
-                            "mean_between_connectivity": matrix[
-                                np.ix_(network_to_indices[a], network_to_indices[b])
-                            ].mean(),
-                        }
-                    )
     for name, tables in spectral_tables.items():
         pd.concat(tables, ignore_index=True).to_csv(
-            spectral_dir / f"{name}_all.csv", index=False
+            spectral_dir / f"{name}_all_groups.csv", index=False
         )
-    for name, rows, filename in [
-        ("whole_brain", graph_rows, "whole_brain_metrics.csv"),
-        ("network_topology", topology_rows, "subject_metrics.csv"),
-        ("within_network_connectivity", within_rows, "subject_metrics.csv"),
-        ("between_network_connectivity", between_rows, "subject_metrics.csv"),
-    ]:
-        folder = comparison_dir / name
-        folder.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame(rows).to_csv(folder / filename, index=False)
-    pd.DataFrame(matrix_index).to_csv(
-        comparison_dir / "connectivity_files.csv", index=False
-    )
+    collect_connectivity(subject_info)
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--collect-connectivity", action="store_true")
+    parser.add_argument("--connectivity-only", action="store_true")
+    args = parser.parse_args()
+    if args.collect_connectivity:
+        collect_connectivity()
+    else:
+        main(connectivity_only=args.connectivity_only)
