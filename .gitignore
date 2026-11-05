@@ -1,6 +1,8 @@
 results/
 plots/
-output_plots/
+output_plots/**
+!output_plots/**/
+!output_plots/**/*.svg
 __pycache__/
 *.py[cod]
 .venv/

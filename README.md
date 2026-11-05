@@ -59,7 +59,10 @@ EEG_projects/
 Collection, statistics and plotting use this same structure; there are no
 density-suffixed output folders. Raw EEG, demographic files, preprocessing
 inputs and the atlas coordinate file must be supplied by the researcher.
-Participant data and generated outputs must not be committed to GitHub.
+Participant data and analysis tables must not be committed to GitHub.
+`output_plots/` contains the selected SVG figure exports matching the current
+plotting scripts, including NBS; obsolete plot types such as circos are omitted.
+PNG duplicates and CSV tables are excluded from this published figure folder.
 The demographic CSV must contain the verified six-month outcome classification
 in `chroncity_class_6m` (0: non-transitioner, 1: transitioner). The public code
 does not override outcomes for individual participant IDs. Pain rainclouds use
